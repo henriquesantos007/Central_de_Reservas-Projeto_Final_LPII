@@ -1,0 +1,63 @@
+# Trabalho Prático 3 - Comunicação (Módulo 3)
+**Disciplina:** Linguagem de Programação II (LPII)
+
+## 1. Cenário Escolhido
+**Cenário B: Central de Reservas**.
+O sistema gerencia um conjunto fixo de N=64 recursos (como assentos ou vagas) indexados de 0 a 63. Os clientes efetuam reservas e cancelamentos concorrentemente, e o desafio central resolvido pelo sistema é impedir a dupla reserva do mesmo recurso sob concorrência.
+
+## 2. Protocolo Implementado
+O servidor TCP atende requisições baseadas no seguinte protocolo canônico, com uma requisição por linha e campos separados por espaço:
+*   `LIST`: Retorna `MAP <sequência de 64 caracteres 0/1>` indicando o status atual de todos os recursos (0 = livre, 1 = ocupado).
+*   `RESERVE <id> <titular>`: Retorna `OK` se reservou com sucesso, `TAKEN` se já estava ocupado, ou `INVALID` se o identificador estiver fora da faixa permitida.
+*   `CANCEL <id>`: Retorna `OK` se liberou com sucesso, `FREE` se o recurso já constava como livre, ou `INVALID`.
+*   `STATUS <id>`: Retorna `FREE` se livre, `TAKEN <titular>` se estiver ocupado, ou `INVALID`.
+*   `QUIT`: Retorna `BYE` e o servidor fecha o socket da conexão.
+*   Qualquer outro comando malformado retorna `ERR <motivo>`.
+
+## 3. Justificativa da Primitiva de Sincronização
+O cenário modela um sistema com forte concorrência, focado em operações de checagem condicional atômica. Ao receber um comando `RESERVE`, o sistema executa um fluxo de *test-and-set* (verificar e ocupar sem janela de interrupção).
+
+**Por que não usar rwlock (Leitores-Escritores)?**
+Embora o sistema possua comandos de leitura pura (como `STATUS` e `LIST`), a principal transação crítica (`RESERVE`) exige que a *thread* faça uma verificação de leitura e, em seguida, uma modificação de escrita imediata se o recurso estiver livre. Como o *rwlock* não suporta a promoção atômica (*upgrade*) de um *lock* de leitura para um de escrita, teríamos que iniciar o `RESERVE` diretamente com um *lock* exclusivo de escrita, minando os benefícios do *rwlock*.
+
+**A Escolha: Mutex (`pthread_mutex_t`)**
+A primitiva de sincronização escolhida foi o Mutex com o atributo `PTHREAD_PROCESS_SHARED`, que reside fisicamente dentro do segmento de Memória Compartilhada (SHM) POSIX. Ele resolve com perfeição o requisito de exclusão mútua total. Como a verificação e alteração dos dados na memória principal (uma checagem condicional simples seguida de uma cópia de *string*) ocorrem na escala de nanossegundos, o custo de aquisição do *lock* do Mutex é baixíssimo. O comportamento bloqueante do Mutex no kernel gerencia de forma justa a disputa das *threads*, eliminando com máxima eficiência o risco de perda de atualização ou dupla reserva entre as requisições.
+
+## 4. Instruções de Build e Execução
+Este projeto fornece um `Makefile` que automatiza a geração dos binários exigidos com a padronização adequada (Padrão C17).
+
+**Compilação:**
+Para gerar os binários (`servidor`, `cliente`, `inspetor`), execute na raiz do projeto:
+```bash
+make
+```
+
+**Execução:**
+1. Inicie o servidor (dono do segmento SHM e roteador das conexões TCP):
+   ```bash
+   ./servidor <porta> [nome_shm]
+   # Exemplo: ./servidor 8080 /minhacentral
+   ```
+2. Inicie o processo cliente de forma interativa:
+   ```bash
+   ./cliente <host> <porta>
+   # Exemplo: ./cliente 127.0.0.1 8080
+   ```
+3. Opcionalmente, ateste a comunicação interprocessos nativa sem rede utilizando o inspetor:
+   ```bash
+   ./inspetor [nome_shm]
+   # Exemplo: ./inspetor /minhacentral
+   ```
+
+**Limpeza:**
+Para apagar os executáveis do diretório de trabalho:
+```bash
+make clean
+```
+
+## 5. Declaração de Uso de Inteligência Artificial
+Durante o ciclo de desenvolvimento deste trabalho prático, fiz uso de uma ferramenta de Inteligência Artificial (LLM) como assistente de codificação e tutoria de *debugging*. O apoio da IA ocorreu nas seguintes situações:
+*   **Race Condition no Socket:** Inicialmente, meu servidor estava passando o endereço de uma variável de escopo local para o `pthread_create` das *threads* de atendimento. A IA me auxiliou apontando o erro e sugerindo que eu precisava obrigatoriamente alocar o socket de forma dinâmica no *heap* (`malloc(sizeof(int))`) para evitar o sobrescrevimento do valor (uma clássica condição de corrida) quando múltiplos clientes conectavam muito rapidamente.
+*   **Detecção de Warnings Implícitas:** Usei a IA para decifrar alertas do compilador `gcc` (com as *flags* `-Wall -Wextra`). Fui instruído de que o erro *incompatible implicit declaration of built-in function* ocorria por esquecer a inclusão da biblioteca `<string.h>` necessária para operações básicas de texto como `strcmp` e `strcpy`.
+*   **Diagnóstico da Conexão TCP (Comando QUIT):** Ao testar o encerramento do protocolo TCP pelo utilitário `netcat`, notei que o terminal não liberava após a mensagem `BYE`. A IA serviu como tutor para explicar que o envio do flag `FIN` não encerra a escuta forçadamente por conta do conceito *half-close* em ferramentas como o `netcat`. Isso me direcionou para fazer com que o `cliente.c` capturasse os `0 bytes` de leitura e desligasse organicamente o cliente com um `break`.
+*   **Geração de Artefatos:** A estruturação final deste `README.md` e as regras de compilação da ferramenta `Makefile` foram consolidadas através de roteiros gerados diretamente pela IA a partir das minhas implementações em C.
