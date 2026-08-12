@@ -1,4 +1,5 @@
 #include "estado_compartilhado.h"
+#include "fila_conexoes.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <fcntl.h>
@@ -10,15 +11,18 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 
+#define NUM_WORKERS 4 // 4 threads fixas
+
 
 // globais pra limpeza no encerramento
 char shm_name_global[256] = "/lpii_tp3";
 EstadoCompartilhado *estado_global = NULL;
+FilaConexoes fila_global;
 int shm_fd_global = -1;
 int server_fd_global = -1;
 volatile sig_atomic_t rodando = 1;
 
-// handler seguro para sinais (apenas seta flag e destrava accept)
+// handler seguro pros sinais
 void tratar_sinal(int sig) {
     (void)sig;
     rodando = 0;
@@ -28,11 +32,7 @@ void tratar_sinal(int sig) {
 }
 
 // Thread worker pra cada cliente
-void *tratar_cliente(void *arg) {
-    // Recupera o socket do cliente e libera a memória alocada no heap
-    int client_socket = *(int*)arg;
-    free(arg); 
-
+void tratar_cliente(int client_socket) {
     char buffer[1024];
     char resposta[1024];
     ssize_t bytes_lidos;
@@ -90,6 +90,14 @@ void *tratar_cliente(void *arg) {
     }
 
     close(client_socket);
+}
+
+void *worker_loop(void *arg) {
+    (void)arg;
+    while (rodando) {
+        int client_socket = fila_desenfileirar(&fila_global);
+        tratar_cliente(client_socket);
+    }
     return NULL;
 }
 
@@ -129,6 +137,16 @@ int main(int argc, char *argv[]) {
     // Inicializa o estado (zera recursos e cria o Mutex interprocessos)
     estado_init(estado_global);
 
+    // Setup do Thread Pool
+    fila_init(&fila_global);
+
+    // Preparando as threads antes de começar
+    pthread_t workers[NUM_WORKERS];
+    for (int i = 0; i < NUM_WORKERS; i++) {
+        pthread_create(&workers[i], NULL, worker_loop, NULL);
+        pthread_detach(workers[i]); // Eles vao rodar independentemente
+    }
+
     // Setup do Socket TCP
     server_fd_global = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -155,15 +173,8 @@ int main(int argc, char *argv[]) {
         int client_socket = accept(server_fd_global, (struct sockaddr*)&client_addr, &client_len);
         if (client_socket < 0) continue;
 
-        // Tive que alocar memória para o socket dinamicamente. Por que quando eu passava o endereço de uma variável local, tinha uma Race Condition, pois a próxima conexão sobrescreveria o valor antes da thread nova conseguir ler.
-        int *new_sock = malloc(sizeof(int));
-        *new_sock = client_socket;
-
-        pthread_t thread_id;
-        pthread_create(&thread_id, NULL, tratar_cliente, (void*)new_sock);
-        
-        // PTHREAD_CREATE_DETACHED dinâmico, avisa ao SO que não vamos dar join(). Quando a thread terminar, os recursos podem ser limpos na hora.
-        pthread_detach(thread_id); 
+        // O produtor apenas enfileira e volta a esperar novas conexoes
+        fila_enfileirar(&fila_global, client_socket);
     }
 
     // cleanup principal
@@ -175,6 +186,7 @@ int main(int argc, char *argv[]) {
     if (shm_fd_global != -1) {
         shm_unlink(shm_name_global);
     }
+    fila_destruir(&fila_global);
 
     return 0;
 }
