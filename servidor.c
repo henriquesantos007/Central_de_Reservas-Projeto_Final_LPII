@@ -48,7 +48,7 @@ void tratar_cliente(int client_socket) {
         int id = -1;
 
         // Tenta extrair COMANDO, ID e TITULAR da string enviada
-        int itens = sscanf(buffer, "%s %d %s", comando, &id, titular);
+        int itens = sscanf(buffer, "%31s %d %31s", comando, &id, titular);
 
 
         // Roteamento do Protocolo Canônico
@@ -94,8 +94,9 @@ void tratar_cliente(int client_socket) {
 
 void *worker_loop(void *arg) {
     (void)arg;
-    while (rodando) {
+    while (1) {
         int client_socket = fila_desenfileirar(&fila_global);
+        if (client_socket == -1) break; // sinal de encerramento
         tratar_cliente(client_socket);
     }
     return NULL;
@@ -144,7 +145,6 @@ int main(int argc, char *argv[]) {
     pthread_t workers[NUM_WORKERS];
     for (int i = 0; i < NUM_WORKERS; i++) {
         pthread_create(&workers[i], NULL, worker_loop, NULL);
-        pthread_detach(workers[i]); // Eles vao rodar independentemente
     }
 
     // Setup do Socket TCP
@@ -179,6 +179,12 @@ int main(int argc, char *argv[]) {
 
     // cleanup principal
     printf("\nLimpando recursos e encerrando...\n");
+
+    fila_encerrar(&fila_global);
+    for (int i = 0; i < NUM_WORKERS; i++) {
+        pthread_join(workers[i], NULL);
+    }
+
     if (estado_global != NULL) {
         pthread_mutex_destroy(&estado_global->mutex);
         munmap(estado_global, sizeof(EstadoCompartilhado));

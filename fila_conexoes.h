@@ -10,6 +10,7 @@ typedef struct {
     int inicio;
     int fim;
     int contagem;
+    int encerrando; // flag de desligamento gracioso (protegida pelo mesmo mutex)
     
     // Primitivas de sincronizacao interna do monitor da fila
     pthread_mutex_t mutex;
@@ -19,7 +20,8 @@ typedef struct {
 
 void fila_init(FilaConexoes *f);
 void fila_enfileirar(FilaConexoes *f, int client_socket);
-int fila_desenfileirar(FilaConexoes *f);
+int fila_desenfileirar(FilaConexoes *f); // retorna -1 quando a fila foi encerrada
+void fila_encerrar(FilaConexoes *f); // acorda todos os consumidores ociosos
 void fila_destruir(FilaConexoes *f);
 
 #endif
