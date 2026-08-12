@@ -1,1 +1,8 @@
+# Arquivos Executáveis
 teste_monitor
+servidor
+inspetor
+cliente
+
+# Arquivos Objeto pro Makefile
+*.o
