@@ -61,3 +61,18 @@ Durante o ciclo de desenvolvimento deste trabalho prático, fiz uso de uma ferra
 *   **Detecção de Warnings Implícitas:** Usei a IA para decifrar alertas do compilador `gcc` (com as *flags* `-Wall -Wextra`). Fui instruído de que o erro *incompatible implicit declaration of built-in function* ocorria por esquecer a inclusão da biblioteca `<string.h>` necessária para operações básicas de texto como `strcmp` e `strcpy`.
 *   **Diagnóstico da Conexão TCP (Comando QUIT):** Ao testar o encerramento do protocolo TCP pelo utilitário `netcat`, notei que o terminal não liberava após a mensagem `BYE`. A IA serviu como tutor para explicar que o envio do flag `FIN` não encerra a escuta forçadamente por conta do conceito *half-close* em ferramentas como o `netcat`. Isso me direcionou para fazer com que o `cliente.c` capturasse os `0 bytes` de leitura e desligasse organicamente o cliente com um `break`.
 *   **Geração de Artefatos:** A estruturação final deste `README.md` e as regras de compilação da ferramenta `Makefile` foram consolidadas através de roteiros gerados diretamente pela IA a partir das minhas implementações em C.
+
+## 6. Bônus Implementado: Thread Pool (+1,0)
+A arquitetura do servidor foi aprimorada, substituindo o modelo de *thread-por-conexão* dinâmico por um padrão *Produtor-Consumidor* otimizado. 
+
+**Funcionamento da Sincronização:**
+Uma equipe de N=4 *worker threads* (consumidores) é criada no início da execução. A fila de pendências (`FilaConexoes`) foi implementada em um arquivo isolado como um *buffer* circular de capacidade máxima de 64 *sockets*. Ela é protegida internamente por um `pthread_mutex_t` para garantir a exclusão mútua e utiliza duas variáveis de condição (`pthread_cond_t nao_cheia` e `nao_vazia`) para sinalização sem espera ocupada.
+
+A *thread* principal (`main`) executa o `accept()` e enfileira o socket. Caso ocorra um pico gigantesco de requisições e a fila lote, a *thread* principal aplicará uma *backpressure*, bloqueando-se (`pthread_cond_wait(&nao_cheia)`) até que os trabalhadores aliviem o gargalo. De forma inversa, se a casa estiver ociosa, os *workers* ficam dormindo na variável `nao_vazia` sem gastar CPU, preservando a performance do hardware.
+
+**Gerenciamento de Gargalos: Backlog vs Fila da Aplicação**
+É importante destacar a arquitetura de dupla fila adotada para absorver picos de requisições:
+1.  **Backlog do Sistema Operacional (`listen`):** Configurado com tamanho 10. Esta é a fila em nível de Kernel (pilha TCP/IP) que segura os *handshakes* de conexões recém-chegadas que ainda não foram processadas pela chamada `accept()`.
+2.  **Fila da Aplicação (`FilaConexoes`):** Configurada com tamanho 64. É o *buffer* do padrão Produtor-Consumidor no espaço de usuário.
+
+Essa separação garante que o servidor não rejeite conexões (evitando o erro `ECONNREFUSED`) durante surtos de tráfego que ocorram no exato milissegundo em que a *thread* principal está ocupada transferindo um *socket* do Kernel para o *Thread Pool*.
