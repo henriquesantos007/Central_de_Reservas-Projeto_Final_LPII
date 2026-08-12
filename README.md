@@ -76,3 +76,12 @@ A *thread* principal (`main`) executa o `accept()` e enfileira o socket. Caso oc
 2.  **Fila da Aplicação (`FilaConexoes`):** Configurada com tamanho 64. É o *buffer* do padrão Produtor-Consumidor no espaço de usuário.
 
 Essa separação garante que o servidor não rejeite conexões (evitando o erro `ECONNREFUSED`) durante surtos de tráfego que ocorram no exato milissegundo em que a *thread* principal está ocupada transferindo um *socket* do Kernel para o *Thread Pool*.
+
+**Encerramento Gracioso do Pool (`pthread_join`)**
+Ao contrário do modelo *thread-por-conexão* original — em que cada *thread* era efêmera e podia ser apenas `detach`ada —, as *worker threads* do pool têm ciclo de vida atrelado ao processo inteiro, então o encerramento precisa ser coordenado explicitamente:
+ 
+1.  Ao receber `SIGINT`/`SIGTERM`, o `main` sai do laço de `accept()` e chama `fila_encerrar()`, que liga uma *flag* `encerrando` protegida pelo mesmo *mutex* da fila e dá `pthread_cond_broadcast` na condvar `nao_vazia`. Isso acorda **todos** os *workers*, mesmo os que estão ociosos e bloqueados em `pthread_cond_wait` — um `pthread_cond_signal` sozinho poderia acordar só um deles.
+2.  Cada *worker*, ao acordar, reavalia a condição de parada: se a fila está vazia e `encerrando` está ligada, `fila_desenfileirar` retorna o sentinela `-1` em vez de bloquear de novo, e o *worker* sai do laço (`worker_loop`) naturalmente.
+3.  Só então o `main` chama `pthread_join` em cada uma das `NUM_WORKERS` *threads*, garantindo que nenhuma delas ainda esteja usando o *mutex*/*condvars* da fila.
+4.  Somente depois de todos os `join`s retornarem é que `estado_global->mutex` é destruído, o segmento é desalocado (`shm_unlink`) e `fila_destruir()` chama `pthread_mutex_destroy`/`pthread_cond_destroy` na fila.
+Essa ordem importa: destruir um *mutex* ou uma *condvar* enquanto ainda existem *threads* bloqueadas nela é comportamento indefinido pelo POSIX. Por isso as *worker threads* deixaram de ser `pthread_detach`adas — sem o `pthread_join`, o processo não tem como saber que todas terminaram antes de liberar os recursos que elas ainda podem estar usando.
