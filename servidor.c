@@ -11,33 +11,23 @@
 #include <netinet/in.h>
 
 
-// Nome padrão do segmento de memória
-#define SHM_NAME "/lpii_tp3_central"
-#define PORTA 8080 // fixo para o teste, por enquanto
-
-// Variáveis globais apenas para o handler de sinal conseguir limpar os recursos
+// globais pra limpeza no encerramento
+char shm_name_global[256] = "/lpii_tp3";
 EstadoCompartilhado *estado_global = NULL;
 int shm_fd_global = -1;
 int server_fd_global = -1;
+volatile sig_atomic_t rodando = 1;
 
-// Handler para limpar a memória quando a gente apertar Ctrl+C
+// handler seguro para sinais (apenas seta flag e destrava accept)
 void tratar_sinal(int sig) {
-    (void)sig; // Suprime aviso de variável não usada
-    printf("\n[Servidor] Encerrando... Limpando memória compartilhada.\n");
-
-    if (server_fd_global != -1) close(server_fd_global);
-    
-    if (estado_global != NULL) {
-        pthread_mutex_destroy(&estado_global->mutex);
-        munmap(estado_global, sizeof(EstadoCompartilhado));
+    (void)sig;
+    rodando = 0;
+    if (server_fd_global != -1) {
+        close(server_fd_global);
     }
-    if (shm_fd_global != -1) {
-        close(shm_fd_global);
-        shm_unlink(SHM_NAME); // Remove o segmento órfão
-    }
-    exit(0);
 }
 
+// Thread worker pra cada cliente
 void *tratar_cliente(void *arg) {
     // Recupera o socket do cliente e libera a memória alocada no heap
     int client_socket = *(int*)arg;
@@ -103,13 +93,28 @@ void *tratar_cliente(void *arg) {
     return NULL;
 }
 
-int main() {
+int main(int argc, char *argv[]) {
+    // Validação da invocação obrigatoria
+    if (argc < 2) {
+        fprintf(stderr, "Uso: %s <porta> [nome shm]\n", argv[0]);
+        exit(1);
+    }
+
+    int porta = atoi(argv[1]);
+    
+    // Sobrescreve nome padrão da shm se passado no argv
+    if (argc >= 3) {
+        strncpy(shm_name_global, argv[2], sizeof(shm_name_global) - 1);
+        shm_name_global[sizeof(shm_name_global) - 1] = '\0';
+    }
+
     // Registra o tratamento de sinais
     signal(SIGINT, tratar_sinal);
     signal(SIGTERM, tratar_sinal);
+    signal(SIGPIPE, SIG_IGN);
 
     // Cria a Memória Compartilhada
-    shm_fd_global = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
+    shm_fd_global = shm_open(shm_name_global, O_CREAT | O_RDWR, 0666);
     if (shm_fd_global == -1) {
         perror("Erro no shm_open");
         exit(1);
@@ -134,16 +139,15 @@ int main() {
     struct sockaddr_in address;
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(PORTA);
+    address.sin_port = htons(porta);
 
     bind(server_fd_global, (struct sockaddr*)&address, sizeof(address));
     listen(server_fd_global, 10); // Fila de espera na porta
 
-    printf("[Servidor] Memória Compartilhada '%s' alocada com sucesso!\n", SHM_NAME);
-    printf("[Servidor] Servidor TCP escutando na porta %d...\n", PORTA);
+    printf("SHM '%s' alocada. Servidor escutando na porta %d\n", shm_name_global, porta);
 
-    // Loop infinito simulando a vida do servidor
-    while (1) {
+    // Loop de aceitação
+    while (rodando) {
         struct sockaddr_in client_addr;
         socklen_t client_len = sizeof(client_addr);
         
@@ -160,6 +164,16 @@ int main() {
         
         // PTHREAD_CREATE_DETACHED dinâmico, avisa ao SO que não vamos dar join(). Quando a thread terminar, os recursos podem ser limpos na hora.
         pthread_detach(thread_id); 
+    }
+
+    // cleanup principal
+    printf("\nLimpando recursos e encerrando...\n");
+    if (estado_global != NULL) {
+        pthread_mutex_destroy(&estado_global->mutex);
+        munmap(estado_global, sizeof(EstadoCompartilhado));
+    }
+    if (shm_fd_global != -1) {
+        shm_unlink(shm_name_global);
     }
 
     return 0;
