@@ -7,8 +7,8 @@ LDFLAGS = -lrt
 all: servidor cliente inspetor
 
 # Receita para compilar o servidor
-servidor: servidor.c estado_compartilhado.c estado_compartilhado.h
-	$(CC) $(CFLAGS) servidor.c estado_compartilhado.c -o servidor $(LDFLAGS)
+servidor: servidor.c estado_compartilhado.c estado_compartilhado.h fila_conexoes.c fila_conexoes.h
+	$(CC) $(CFLAGS) servidor.c estado_compartilhado.c fila_conexoes.c -o servidor $(LDFLAGS)
 
 # Receita para compilar o cliente (não precisa da biblioteca de tempo real -lrt, mas usa as mesmas CFLAGS)
 cliente: cliente.c
