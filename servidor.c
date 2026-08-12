@@ -160,7 +160,7 @@ int main(int argc, char *argv[]) {
     address.sin_port = htons(porta);
 
     bind(server_fd_global, (struct sockaddr*)&address, sizeof(address));
-    listen(server_fd_global, 10); // Fila de espera na porta
+    listen(server_fd_global, 10); // backlog
 
     printf("SHM '%s' alocada. Servidor escutando na porta %d\n", shm_name_global, porta);
 
